@@ -1,0 +1,141 @@
+---
+title: "Watershed Condition Class: Forest Change Analysis."
+author: "Josh Erickson"
+date: "2/17/2021"
+output: word_document
+bibliography: cit.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rgee)
+ee_Initialize(email = "joshualerickson@gmail.com", gcs = TRUE)
+library(sf)
+library(tidyverse)
+library(AOI)
+```
+
+# Introduction  
+
+Below is a workflow used to create a *forest change* raster (2011-2019) for the Watershed Condition Class (WCC) analysis in USDA-USFS Region 1. The workflow leverages Google Earth Engine (GEE)  [@gorelick2017google] to get large remote sensing products fast and easy. This allows for reproducibility in the future as well as quick return times for clients, i.e. making large requests managable. The analysis uses the United States National Land Cover Database (NLCD) [@yang2018new] and the Hansen Global Forest Change v1.7 (2000-2019) [@hansen2013high] to create a raster with three bands: 1) forest loss, 2). loss year, 3). percentage of forest cover. The workflow will go through code in R [@R] using the `rgee` package [@rgee] which does all of the heavy lifting; however, it is essentially JavaScript and if you want to do this workflow in JavaScript then please use this [link](https://code.earthengine.google.com/0f55d3a06aa40e1cec78a6f3d83566e8). The rest of the report will be mostly code and workflow, so you have been warned.
+
+
+# Workflow
+
+Libraries we'll use.
+```{r, eval = F}
+library(rgee)
+ee_Initialize()
+library(sf)
+library(tidyverse)
+```
+
+First we'll get the bbox for Region 1. This will be used for exporting the final image at the end of the analysis. 
+
+```{r}
+region_1_bbox <- st_bbox(c(xmin = -117.190616, xmax = -96.554411, ymax = 49.001390, ymin = 44.26879), crs = st_crs(4326))
+
+r1_bb <- st_as_sfc(region_1_bbox) %>% st_as_sf() 
+
+geom = ee$Geometry$Rectangle(region_1_bbox)
+```
+
+Now we'll just take a quick peak and see what we'll be getting for our final image region.
+
+```{r, fig.align='center'}
+state_r1 <- aoi_get(state = c("Montana", "Idaho", "Wyoming", "South Dakota", "North Dakota"))
+
+# plot showing boundary
+ggplot() + geom_sf(data = state_r1, fill = NA) +
+  geom_sf(data = r1_bb, fill = NA, color = 'red', aes(shape = "bbox")) + theme_bw() + labs(shape = "")
+```
+
+Below is where we'll start working with earth engine. The goal is to get the global forest change (GFC) image from @hansen2013high and filter all the years greater than 2011. This will give us an image of only 2011-2019 data. To do this, we need to mask years greater than '11' from the 'lossyear' band. We'll also mask out no-data (0) and 'permanent water bodies' (2) using the 'datamask' band. Once we perform the masking steps we'll have an image only including years from 2011-2019 and masked out water-bodies and no-data.  
+<br>
+
+```{r, eval = T}
+# now get the global forest change from 2011 up to 2019
+
+gfc = ee$Image('UMD/hansen/global_forest_change_2019_v1_7')
+
+# need to mask out years from 2011 to 2019
+
+gfc_11_19_mask = gfc$select('lossyear')$gt(11)
+
+gfc_11_19 = gfc$updateMask(gfc_11_19_mask)
+
+gfc_dataMask = gfc$select('datamask')$eq(1)
+
+gfc_11_19 = gfc_11_19$updateMask(gfc_dataMask) #this is the final image to use
+
+# now visualise to see the difference
+#Map$addLayer(gfc_11_19, visParams = list(bands = 'loss',min = 0, max = 1, palette = c('red'))) | Map$addLayer(gfc, visParams = list(bands = 'lossyear',min = 0, max = 1, palette = 'blue'))
+
+```
+
+<br>
+The video below shows what it would look like if we didn't mask-out the years; <span style='color: blue;'>blue</span> being 2000-2019 and <span style='color: red;'>red</span> being 2011-2019. Notice how some older units in <span style='color: blue;'>blue</span> disappear when only looking at 2011-2019. 
+<br>
+<center>
+<video width="600" height="400" controls>
+  <source src="images/difference.mp4" type="video/mp4">
+</video>
+</center>
+<br>
+
+Now we need to get the NLCD for 2011 so that we can determine what the 'percent tree cover' is at the start of our analysis. The reason we can't just use the GFC image is that image uses percent tree cover from 2000, e.g. 'treecover2000' band. So, we'll need to bring in the image and then mask out pixels with 90% or more of tree cover as well as water-bodies and no-data from the GFC image. This will provide us an image that we can then use to compare 'total tree cover/HUC 12' and 'total forest loss/HUC 12'. Without this calculation, the results would be misleading in HUC12 watersheds where most of the land is either shrub-grassland or bare. 
+<br>
+<style>
+.html-widget {
+    margin: auto;
+}
+</style>
+```{r, eval = T, fig.align='center', fig.cap='<b>NLCD Percent Tree Cover after masking</b>'}
+
+nlcd = ee$Image("USGS/NLCD/NLCD2011")
+nlcd_tree <- nlcd$select('percent_tree_cover')
+nlcd_tree_mask <- nlcd_tree$gt(.90) # I really think above 0 is ideal
+nlcd_tree = nlcd_tree$updateMask(nlcd_tree_mask)
+nlcd_tree = nlcd_tree$updateMask(gfc_dataMask)
+
+Map$addLayer(nlcd_tree$clip(geom))
+
+```
+<br>
+
+Now we can add this band (`nlcd_tree`) to the `gfc_11_19` image but first let's reproject the images so that they are the same. The projection the region uses is below (e.g., NAD_1983_Albers/EPSG:5070/NAD83/Conus Albers).
+
+```{r}
+st_read("T:/FS/Reference/GIS/r01/Data/SpatialReference/R1SpatialReference.gdb")
+
+```
+
+Below will reproject both images (`gfc_11_19` and `nlcd_tree`) and then add the bands from `nlcd_tree` to `gfc_11_19`. Then we'll only grab the relevant bands: 'percent_tree_cover', 'loss', 'lossyear'. You could just export all the bands if needed or if you wanted to add other information (e.g. precip, ndvi, npp, etc) you could that in this step.
+
+```{r, eval = F}
+
+gfc_mask_reProj <- gfc_11_19$reproject(crs = 'EPSG:5070')
+nlcd_tree_reProj <- nlcd_tree$reproject(crs = 'EPSG:5070')
+
+gfc_nlcd <- gfc_mask_reProj$addBands(nlcd_tree_reProj)
+
+gfc_nlcd <- gfc_nlcd$select(c('percent_tree_cover', 'loss', 'lossyear'))
+```
+
+Now we can download to a tiff. This will probably take a couple of hours or more! If you want to try a smaller geom (e.g. region) and test out the process **I'd recommend** doing that before you export the entire image.
+
+```{r, eval=F}
+
+geom = ee$Geometry$Rectangle(region_1_bbox)
+
+gfc_nlcd_5070 <- ee_as_raster(gfc_nlcd,
+                                 region = geom,
+                                 dsn = "gfc_nlcd_5070",
+                                 scale = 30,
+                                 crs = 'EPSG:5070',
+                                 container = "jle_rasters",
+                                 via = "gcs",
+                                 lazy = TRUE)
+```
+
+# References

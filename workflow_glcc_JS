@@ -1,0 +1,47 @@
+https://code.earthengine.google.com/0f55d3a06aa40e1cec78a6f3d83566e8
+
+
+// need to mask out years from 2011 to 2019
+
+var gfc_11_19_mask = gfc.select('lossyear').gt(11);
+print(gfc_11_19_mask);
+var gfc_11_19 = gfc.updateMask(gfc_11_19_mask);
+
+var gfc_dataMask = gfc.select('datamask').eq(1);
+print(gfc_dataMask);
+var gfc_11_19 = gfc_11_19.updateMask(gfc_dataMask);
+print(gfc_11_19);
+
+// now visualise to see the difference, i.e. there isn't
+Map.addLayer(gfc_11_19, {bands: ['lossyear']}, 'lossyear');
+Map.addLayer(gfc_11_19, {bands: ['loss']}, 'loss');
+// Now bring in the NLCD data
+
+var nlcd_tree = nlcd.select('percent_tree_cover');
+var nlcd_tree_mask = nlcd_tree.gt(0.90); // I really think above 0 is ideal
+var nlcd_tree = nlcd_tree.updateMask(nlcd_tree_mask);
+var nlcd_tree = nlcd_tree.updateMask(gfc_dataMask);
+
+Map.addLayer(nlcd_tree.clip(geom), {}, 'nlcd_tree');
+
+print(nlcd_tree);
+// Now change the projection to get ready for export
+
+var gfc_mask_reProj = gfc_11_19.reproject('EPSG:5070');
+var nlcd_tree_reProj = nlcd_tree.reproject('EPSG:5070');
+
+var gfc_nlcd = gfc_mask_reProj.addBands(nlcd_tree_reProj);
+
+var gfc_nlcd = gfc_nlcd.select(['percent_tree_cover', 'loss', 'lossyear']);
+
+print(gfc_nlcd);
+// now export to drive, cloud, etc.
+// Export the image, specifying scale and region.
+Export.image.toDrive({
+  image: gfc_nlcd,
+  description: 'gfc_nlcd',
+  scale: 30,
+  crs: 'EPSG:5070',
+  region: geom,
+  maxPixels: 1e12
+});
