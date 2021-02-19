@@ -11,13 +11,16 @@ knitr::opts_chunk$set(echo = TRUE)
 library(rgee)
 ee_Initialize(email = "joshualerickson@gmail.com", gcs = TRUE)
 library(sf)
+library(stars)
+library(raster)
 library(tidyverse)
 library(AOI)
+library(prettydoc)
 ```
 
 # Introduction  
 
-Below is a workflow used to create a *forest change* raster (2011-2019) for the Watershed Condition Class (WCC) analysis in USDA-USFS Region 1. The workflow leverages Google Earth Engine (GEE)  [@gorelick2017google] to get large remote sensing products fast and easy. This allows for reproducibility in the future as well as quick return times for clients, i.e. making large requests managable. The analysis uses the United States National Land Cover Database (NLCD) [@yang2018new] and the Hansen Global Forest Change v1.7 (2000-2019) [@hansen2013high] to create a raster with three bands: 1) forest loss, 2). loss year, 3). percentage of forest cover. The workflow will go through code in R [@R] using the `rgee` package [@rgee] which does all of the heavy lifting; however, it is essentially JavaScript and if you want to do this workflow in JavaScript then please use this [link](https://code.earthengine.google.com/0f55d3a06aa40e1cec78a6f3d83566e8). The rest of the report will be mostly code and workflow, so you have been warned.
+Below is a workflow used to create a *forest change* raster (2011-2019) for the Watershed Condition Class (WCC) analysis in USDA-USFS Region 1. The workflow leverages Google Earth Engine (GEE)  [@gorelick2017google] to get large remote sensing products fast and easy. This allows for reproducibility in the future as well as quick return times for clients, i.e. making large requests managable. The analysis uses the United States National Land Cover Database (NLCD) [@yang2018new] and the Hansen Global Forest Change v1.7 (2000-2019) [@hansen2013high] to create a raster with three bands: 1) forest loss, 2). loss year, 3). percentage of forest cover. The workflow will go through code in R [@R] using the `rgee` package [@rgee] which does all of the heavy lifting; however, it is essentially JavaScript and if you want to do this workflow in JavaScript then please use this [<b>link</b>](https://code.earthengine.google.com/c8964a7b60cd001ba33b747a4986ae4a). Also, the code is housed on github at this [<b>link</b>](https://github.com/joshualerickson/land_cover_change) if you wanted the scripts via file. The rest of the report will be mostly code and workflow, so you have been warned.
 
 
 # Workflow
@@ -50,7 +53,7 @@ ggplot() + geom_sf(data = state_r1, fill = NA) +
   geom_sf(data = r1_bb, fill = NA, color = 'red', aes(shape = "bbox")) + theme_bw() + labs(shape = "")
 ```
 
-Below is where we'll start working with earth engine. The goal is to get the global forest change (GFC) image from @hansen2013high and filter all the years greater than 2011. This will give us an image of only 2011-2019 data. To do this, we need to mask years greater than '11' from the 'lossyear' band. We'll also mask out no-data (0) and 'permanent water bodies' (2) using the 'datamask' band. Once we perform the masking steps we'll have an image only including years from 2011-2019 and masked out water-bodies and no-data.  
+Below is where we'll start working with earth engine. The goal is to get the global forest change (GFC) image from @hansen2013high and filter all the years greater than 2011. This will give us an image of only 2011-2019 data. To do this, we need to mask years greater than or equal to '11' from the 'lossyear' band. We'll also mask out no-data (0) and 'permanent water bodies' (2) using the 'datamask' band. Once we perform the masking steps we'll have an image only including years from 2011-2019 and masked out water-bodies and no-data.  
 <br>
 
 ```{r, eval = T}
@@ -60,7 +63,7 @@ gfc = ee$Image('UMD/hansen/global_forest_change_2019_v1_7')
 
 # need to mask out years from 2011 to 2019
 
-gfc_11_19_mask = gfc$select('lossyear')$gt(11)
+gfc_11_19_mask = gfc$select('lossyear')$gte(11)
 
 gfc_11_19 = gfc$updateMask(gfc_11_19_mask)
 
@@ -103,26 +106,23 @@ Map$addLayer(nlcd_tree$clip(geom))
 ```
 <br>
 
-Now we can add this band (`nlcd_tree`) to the `gfc_11_19` image but first let's reproject the images so that they are the same. The projection the region uses is below (e.g., NAD_1983_Albers/EPSG:5070/NAD83/Conus Albers).
+Now we can add this band (`nlcd_tree`) to the `gfc_11_19` image and we'll only grab the relevant bands: 'percent_tree_cover', 'loss', 'lossyear'. You could just export all the bands if needed or if you wanted to add other information (e.g. precip, ndvi, npp, etc) you could that in this step.
+
+```{r, eval = F}
+
+gfc_nlcd <- gfc_11_19$addBands(nlcd_tree)
+
+gfc_nlcd <- gfc_nlcd$select(c('percent_tree_cover', 'loss', 'lossyear'))
+```
+
+Now we can download to a tiff but first let's find out the crs we need to use so that we can export it without having to do any postprocessing. The crs the region uses is below (e.g., NAD_1983_Albers/EPSG:5070/NAD83/Conus Albers).
 
 ```{r}
 st_read("T:/FS/Reference/GIS/r01/Data/SpatialReference/R1SpatialReference.gdb")
 
 ```
 
-Below will reproject both images (`gfc_11_19` and `nlcd_tree`) and then add the bands from `nlcd_tree` to `gfc_11_19`. Then we'll only grab the relevant bands: 'percent_tree_cover', 'loss', 'lossyear'. You could just export all the bands if needed or if you wanted to add other information (e.g. precip, ndvi, npp, etc) you could that in this step.
-
-```{r, eval = F}
-
-gfc_mask_reProj <- gfc_11_19$reproject(crs = 'EPSG:5070')
-nlcd_tree_reProj <- nlcd_tree$reproject(crs = 'EPSG:5070')
-
-gfc_nlcd <- gfc_mask_reProj$addBands(nlcd_tree_reProj)
-
-gfc_nlcd <- gfc_nlcd$select(c('percent_tree_cover', 'loss', 'lossyear'))
-```
-
-Now we can download to a tiff. This will probably take a couple of hours or more! If you want to try a smaller geom (e.g. region) and test out the process **I'd recommend** doing that before you export the entire image.
+This will probably take a couple of hours or more! If you want to try a smaller geom (e.g. region) and test out the process **I'd recommend** doing that before you export the entire image.
 
 ```{r, eval=F}
 
@@ -137,5 +137,33 @@ gfc_nlcd_5070 <- ee_as_raster(gfc_nlcd,
                                  via = "gcs",
                                  lazy = TRUE)
 ```
+
+From here, we can start to make some quick graphics and maybe look at some distributions, e.g. yearloss to area, etc. 
+
+```{r, eval = F}
+gfc_nlcd_tif <- stack("images/gfc_nlcd_gte.tif")
+
+gfc_nlcd_lossyear <- gfc_nlcd_tif[[3]]
+
+gfc_nlcd_lossyear[gfc_nlcd_lossyear<11]<-NA
+
+#write a raster because this calc above takes a while...
+writeRaster(gfc_nlcd_lossyear, 'images/gfc_nlcd_lossyear.tif') 
+```
+
+```{r, fig.align='center'}
+gfc_nlcd_lossyear <- raster('images/gfc_nlcd_lossyear.tif')
+#stars for plotting
+gfc_nlcd_stars <- st_as_stars(gfc_nlcd_lossyear)
+proj_st <- "+proj=aea +lat_0=23 +lon_0=-96 +lat_1=29.5 +lat_2=45.5 +x_0=0 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs"
+
+ggplot() + geom_stars(data = gfc_nlcd_stars, downsample = c(20, 20, 1)) + geom_sf(data = st_transform(state_r1, crs = 5070, proj4string = proj_st), fill = NA)  +
+  geom_sf(data = st_transform(r1_bb, crs = 5070, proj4string = proj_st), fill = NA, color = 'red', aes(shape = "bbox")) +
+  scale_fill_distiller(na.value = "white", palette = 'RdBu') + theme_bw() + labs(x = '', y = '', fill = 'Loss Years', shape = '')
+```
+
+As you can see this is not the most revealing graph. Also, the joys of working with crs and projections. So, I would recommend opening in your favorite graphical interface (ArcPro, ArcMap, QGIS, etc) and exploring!
+
+
 
 # References

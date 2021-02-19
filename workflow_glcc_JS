@@ -1,4 +1,4 @@
-https://code.earthengine.google.com/0f55d3a06aa40e1cec78a6f3d83566e8
+https://code.earthengine.google.com/c8964a7b60cd001ba33b747a4986ae4a
 
 
 // need to mask out years from 2011 to 2019
@@ -25,12 +25,9 @@ var nlcd_tree = nlcd_tree.updateMask(gfc_dataMask);
 Map.addLayer(nlcd_tree.clip(geom), {}, 'nlcd_tree');
 
 print(nlcd_tree);
-// Now change the projection to get ready for export
 
-var gfc_mask_reProj = gfc_11_19.reproject('EPSG:5070');
-var nlcd_tree_reProj = nlcd_tree.reproject('EPSG:5070');
-
-var gfc_nlcd = gfc_mask_reProj.addBands(nlcd_tree_reProj);
+// Now add the bands together
+var gfc_nlcd = gfc_11_19.addBands(nlcd_tree);
 
 var gfc_nlcd = gfc_nlcd.select(['percent_tree_cover', 'loss', 'lossyear']);
 
