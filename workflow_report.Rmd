@@ -16,6 +16,7 @@ library(raster)
 library(tidyverse)
 library(AOI)
 library(prettydoc)
+library(patchwork)
 ```
 
 # Introduction  
@@ -160,10 +161,10 @@ proj_st <- "+proj=aea +lat_0=23 +lon_0=-96 +lat_1=29.5 +lat_2=45.5 +x_0=0 +y_0=0
 ggplot() + geom_stars(data = gfc_nlcd_stars, downsample = c(20, 20, 1)) + geom_sf(data = st_transform(state_r1, crs = 5070, proj4string = proj_st), fill = NA)  +
   geom_sf(data = st_transform(r1_bb, crs = 5070, proj4string = proj_st), fill = NA, color = 'red', aes(shape = "bbox")) +
   scale_fill_distiller(na.value = "white", palette = 'RdBu') + theme_bw() + labs(x = '', y = '', fill = 'Loss Years', shape = '')
+
 ```
 
 As you can see this is not the most revealing graph. Also, the joys of working with crs and projections. So, I would recommend opening in your favorite graphical interface (ArcPro, ArcMap, QGIS, etc) and exploring!
-
 
 
 # References

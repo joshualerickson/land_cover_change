@@ -1,0 +1,212 @@
+---
+title: "Watershed Condition Class: Forest Change Analysis"
+subtitle: "<h1 style='font-size:2vw'>Quality Control</h1>"
+author: "Josh Erickson"
+date: "2/17/2021"
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+bibliography: cit.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rgee)
+ee_Initialize(email = "joshualerickson@gmail.com", gcs = TRUE)
+library(sf)
+library(stars)
+library(raster)
+library(tidyverse)
+library(AOI)
+library(prettydoc)
+library(exploreRGEE)
+library(exactextractr)
+library(mapview)
+library(patchwork)
+library(scales)
+library(plotly)
+library(leaflet)
+library(magrittr)
+theme_set(theme_bw())
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+```
+
+# Introduction
+
+This is an workflow and quality control of the results from the rasters we generated in the previous analysis. This workflow dubbed 'quality control' will go through the process to finalize the product and also make sure the product is acceptable. 
+
+# Compute Zonal Stats
+
+First we'll need to bring in the rasters we created, e.g. gfc_nlcd_gte.tif and tree_cov_rc.tif.
+
+```{r, eval = F}
+
+gfc_nlcd_loss <- raster("images/gfc_nlcd_gte.tif", band = 2)
+
+#
+
+gfc_nlcd_tree_cov <- raster("images/tree_cov_rc.tif") #reclass as 0 or 1
+
+# now bring in the final hucs
+
+# only USFS land and Fire Perimeters filtered out
+final_hucs <- read_sf("T:/DataCenter/Citrix/Home01/joshualerickson/hucs_with_fire_usfs.shp")
+
+```
+
+Now let's extract `gfc_nld_los` and `gfc_nlcd_tree_cov` from the `final_hucs` shape. This will give us the necessary values to calculate forest cover loss due to management per HUC12.
+
+```{r, eval=FALSE}
+final_hucs$sum_forest_loss <- exact_extract(gfc_nlcd_loss, final_hucs, 'sum')
+final_hucs$sum_tree_cov <- exact_extract(gfc_nlcd_tree_cov, final_hucs, 'sum')
+
+```
+
+Now we can see the distribution of loss and tree cover per HUC12. As you can see below in the figure below, there are a lot of watersheds with tree cover but the overall story is relatively little forest loss.
+
+```{r distr, echo=F, fig.align='center',warning=F, message=F, echo=F, fig.cap= "Distribution of Forest Cover Loss and Total Forest Cover per HUC12 Watershed. It should be mentioned, this is only USFS Land without Fires."}
+
+#st_write(final_hucs, 'images/final_hucs.shp', driver = "ESRI Shapefile")
+final_hucs <- read_sf('images/final_hucs.shp') %>%  rename(sum_forest_loss = "sm_frs_", sum_tree_cov = 'sm_tr_c', percent_loss = 'prcnt_l')
+p1 <- final_hucs %>% st_drop_geometry() %>% ggplot() +
+  geom_density(aes(sum_forest_loss))  + scale_x_log10(labels = scales::comma)+
+  labs(x = 'Sum of Forest Loss (1 = 30m^2 pixel) \n (log-scaled)',title = 'Sum of Forest Loss per HUC12') 
+
+p2 <- final_hucs %>% st_drop_geometry() %>% ggplot() + 
+  geom_density(aes(sum_tree_cov)) +  
+  scale_x_continuous(labels = scales::comma) +
+  labs(x = 'Tree Cover Sum (1 = 30m^2 pixel)',title = 'Tree Cover Sum per HUC12')
+
+p1 + p2
+```
+
+Since the pixels are both 30m^2 we can do simple math on each HUC12 to get a percentage of forest loss, e.g. Sum of Forest Loss/Tree Cover Sum. We can then visualise in a histogram as percentage of the watershed that's been *lossed* by management. We can also a color to see if there's any relationship between heavily forested HUC12's (Sum Tree Cover) and percentage lossed. As you can see in figure below, there's really not a convincing relationship with that hypothesis (high tree cover = higher percentage loss) and the **high** percentage outliers are relatively low in tree cover, so we definitely want to look at this. This might be indicating that there's some *sensitivity* with using a basic percentage calculation. Let's explore this.
+```{r, eval = T}
+final_hucs <- final_hucs %>% mutate(percent_loss = sum_forest_loss/sum_tree_cov)
+```
+
+```{r histo, warning=F, message=F, echo=F, fig.align='center', fig.cap='Histogram of perecent forest loss. Notice how most of the watersheds are in the 0.4 % range.' }
+final_hucs_df <- final_hucs %>% st_drop_geometry()
+
+final_hucs_df %>% ggplot() +
+  geom_histogram(aes(percent_loss), binwidth = 0.05) + 
+  scale_x_log10(labels = scales::percent) +
+  geom_rug(aes(percent_loss, y = 0, color = sum_tree_cov), size = 1) +
+  geom_vline(xintercept = 0.004, col = 'red', size = 2) +
+  geom_vline(xintercept = 0.05, col = 'white',linetype = 3, size = 1) +
+  geom_segment(aes(x = .0001, y = 40, xend = .004, yend = 15),
+                  arrow = arrow(length = unit(0.2, "cm")), lineend = 'round') +
+  geom_segment(aes(x = .28, y = 30, xend = .055, yend = 10),
+                  arrow = arrow(length = unit(0.2, "cm")), lineend = 'round') +
+  geom_label(aes(x = 0.28, 31, label = '5 %'),size=4,family = 'Courier') +
+  geom_label(aes(x = .0001, 40, label = "median \n 0.4 %"),size=4,family = 'Courier') +
+  scale_color_distiller(palette = 'RdYlGn', direction = 1,labels = comma) +
+  
+  labs(x = 'Percentage Lossed (log-scaled)', title = "Percentage Lossed per HUC12", color = 'Sum Tree Cover')
+
+
+```
+
+One way to explore this is to just pull up those HUC12's that are above 5% and see if there is anything visually going on with them. 
+
+```{r,warning=F, message=F, echo=F, fig.align='center', fig.cap= "Area of Interest with percentage of forest loss per HUC12. Red polygons indicate fires from 2011 - 2019."}
+
+# gfc = get_any(final_hucs, i_type = "Image", method = 'UMD/hansen/global_forest_change_2019_v1_7')
+# 
+# # need to mask out years from 2011 to 2019
+# gfc <- gfc$data
+# gfc_11_19_mask = gfc$select('lossyear')$gte(11)
+# 
+# gfc_11_19 = gfc$updateMask(gfc_11_19_mask)
+# 
+# gfc_dataMask = gfc$select('datamask')$eq(1)
+# 
+# gfc_11_19 = gfc_11_19$updateMask(gfc_dataMask)
+
+# fire_perim <- read_sf("T:/DataCenter/Citrix/Home01/joshualerickson/My Documents/ArcGIS/Default.gdb",layer = 'fire_perim')
+# fire_11_19 <- fire_perim %>% filter(FIREYEAR >= 2011) %>% st_transform(crs = 4326) %>% select(FIREYEAR, FIRENAME)
+# st_write(fire_11_19, 'images/fire_11_19.shp', driver = "ESRI Shapefile")
+fire_11_19 <- read_sf('images/fire_11_19.shp')
+fires <- st_simplify(fire_11_19, dTolerance = 0.0025)%>% st_transform(4326)
+
+abv_5 <- final_hucs %>% filter(percent_loss >= 0.05) %>% st_transform(4326)
+state_r1 <- aoi_get(state = c("Montana", "Idaho", "Wyoming", "South Dakota", "North Dakota"))
+
+# plot showing boundary
+ggplot() + geom_sf(data = state_r1, fill = NA) +
+  geom_sf(data = fires, fill = 'red', lwd = 0) +
+  geom_sf(data = abv_5, aes(fill = percent_loss), lwd = 0) +
+  scale_fill_distiller(palette = "BrBG") +
+  labs(fill = 'Percentage Lossed')
+
+```
+
+<br>
+Or we can look at the class breaks for the whole analysis as well.
+```{r, echo=FALSE, fig.align='center'}
+
+
+knitr::include_graphics('images/forest_cover_loss.png')
+```
+
+
+After looking at the graph, some are maybe burn or bug affected and some are not. There's really not a strong argument for the fires affecting the higher percentages. There's an another way we can look at these by using the FACTS database to see if it matches up with the global forest loss raster but as you can see from the graph below it is really really messy! So, I think we can conclude that the global forest change method is appropriate and objective for this workflow, i.e. measuring forest cover loss.
+
+```{r, echo=F,warning=F, message=F, echo=F}
+
+facts_11_19 <- read_sf("T:/DataCenter/Citrix/Home01/joshualerickson/My Documents/ArcGIS/Default.gdb", layer = 'facts_11_19')
+ facts_harvest <- facts_11_19 %>% filter(!TREATMENT_TYPE %in% c("Biomass Removal", "Machine Pile")) %>% 
+   select(NBR_UNITS_ACCOMPLISHED, TREATMENT_TYPE) %>% st_cast("MULTIPOLYGON") %>% st_make_valid()
+ final_hucs <- final_hucs %>% mutate(tree_acres = (sum_tree_cov*900)/4046.8564224)
+ final_hucs_df <- final_hucs %>% st_drop_geometry()
+ 
+final_hucs_with_facts <- st_make_valid(final_hucs) %>% st_intersection(facts_harvest)
+
+```
+
+
+
+
+
+
+```{r, echo = F}
+final_huc_fc <- final_hucs_with_facts %>% st_drop_geometry()
+
+plot_pred <- final_huc_fc %>% group_by(HUC_12) %>% 
+  summarise(per_facts = sum(NBR_UNITS_ACCOMPLISHED)/tree_acres)  %>% slice(1) %>% 
+  left_join(final_hucs_df, by = 'HUC_12') %>% ungroup()
+
+p1 <- plot_pred %>% filter(per_facts < 1) %>% ggplot(aes(per_facts, percent_loss)) + 
+  geom_point() + geom_abline(slope = 1, intercept = 0) +
+  labs(x = 'Facts Percent Lossed', y = 'GFC Percent Lossed', color = 'WCC Class Rating') +
+  scale_x_continuous(labels = scales::percent) + 
+  scale_y_continuous(labels = scales::percent) +
+  theme_bw()
+p1
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
