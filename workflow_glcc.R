@@ -7,6 +7,7 @@ library(raster)
 library(arcgisbinding)
 arc.check_product()
 library(tidyverse)
+library(exactextractr)
 #devtools::install_github("joshualerickson/exploreRGEE")
 library(exploreRGEE)
 
@@ -84,11 +85,13 @@ gfc_nlcd_loss <- raster("images/gfc_nlcd_gte.tif", band = 2)
 gfc_nlcd_tree_cov <- raster("images/gfc_nlcd_gte.tif", band = 1)
 plot(gfc_nlcd_lossyear)
 
+# now bring in the final hucs
 
+# only USFS land and Fire Perimeters filtered out
+final_hucs <- read_sf("T:/DataCenter/Citrix/Home01/joshualerickson/hucs_with_fire_usfs.shp")
 
-#now bring in the forest service only shape
+#now extract
 
-usfs_huc_12s <- read_sf("images/clip_w_usfs_huc12_final.shp")
-fire_perim <- read_sf("T:/DataCenter/Citrix/Home01/joshualerickson/My Documents/ArcGIS/Default.gdb",
-                      layer = 'fire_perim')
-st_crs(fire_perim_crs)
+final_hucs$sum_forest_loss <- exact_extract(gfc_nlcd_loss, final_hucs, 'sum')
+final_hucs$sum_tree_cov <- exact_extract(gfc_nlcd_tree_cov, final_hucs, 'sum')
+
